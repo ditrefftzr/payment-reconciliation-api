@@ -250,6 +250,3 @@ Test the API using:
 - Finance + Data Engineering background
 - Portfolio project demonstrating backend API development
 
-## 📄 License
-
-MIT License - Available for educational purposes.
