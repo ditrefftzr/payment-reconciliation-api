@@ -22,7 +22,6 @@ This API simulates a payment reconciliation system where:
 ## 📊 Database Architecture
 
 Three-table normalized design with foreign key relationships:
-
 ```
 merchants
 ├── id (PK, auto-increment)
@@ -187,7 +186,6 @@ The system matches payments to orders using these rules:
 When matched, both transactions are marked as `reconciled`. Unmatched transactions are flagged for investigation.
 
 ## 🏗️ Project Structure
-
 ```
 payment-reconciliation-api/
 ├── app/
@@ -249,7 +247,3 @@ Test the API using:
 **David Trefftz**
 - Finance + Data Engineering background
 - Portfolio project demonstrating backend API development
-
-## 📄 License
-
-MIT License - Available for educational purposes.
