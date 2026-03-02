@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, status, Depends
 from typing import List, Optional
 from datetime import datetime, date, timedelta
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, and_
 from sqlalchemy.exc import IntegrityError
 
 # Database session dependency
@@ -402,85 +402,80 @@ def reconcile_transactions(db: Session = Depends(get_db)):
     Updates matched pairs to status='reconciled'
     """
     logger.info("Starting reconciliation process")
-    
+
     try:
-        # Query 1: Get all completed orders that aren't reconciled yet
-        orders = db.query(Order).filter(
-            Order.status == OrderStatus.completed
-        ).all()
-        
-        logger.info(f"Found {len(orders)} completed orders to reconcile")
-        
-        # Query 2: Get all completed payments that aren't reconciled yet
-        payments = db.query(Payment).filter(
-            Payment.status == PaymentStatus.completed
-        ).all()
-        
-        logger.info(f"Found {len(payments)} completed payments to reconcile")
-        
-        # Track what we've matched (prevent duplicate matching)
+        # Warn about completed pairs that share merchant_order_id + merchant_id but have different amounts.
+        # These look like they should reconcile but won't, so they're meaningful discrepancies.
+        amount_mismatches = (
+            db.query(
+                Order.merchant_order_id,
+                Order.amount.label('order_amount'),
+                Payment.amount.label('payment_amount'),
+            )
+            .join(Payment, and_(
+                Payment.merchant_order_id == Order.merchant_order_id,
+                Payment.merchant_id == Order.merchant_id,
+                Payment.amount != Order.amount,
+            ))
+            .filter(
+                Order.status == OrderStatus.completed,
+                Payment.status == PaymentStatus.completed,
+            )
+            .all()
+        )
+        for row in amount_mismatches:
+            logger.warning(
+                f"Amount mismatch for order {row.merchant_order_id}: "
+                f"order={row.order_amount}, payment={row.payment_amount}"
+            )
+
+        # Single JOIN query: all matching rules evaluated by the database.
+        # Rules: same merchant_order_id, same merchant_id, exact amount,
+        #        payment date within ±3 days of order date, both status='completed'.
+        matches = (
+            db.query(Order, Payment)
+            .join(Payment, and_(
+                Payment.merchant_order_id == Order.merchant_order_id,
+                Payment.merchant_id == Order.merchant_id,
+                Payment.amount == Order.amount,
+                func.abs(func.datediff(Payment.payment_date, Order.order_date)) <= 3,
+            ))
+            .filter(
+                Order.status == OrderStatus.completed,
+                Payment.status == PaymentStatus.completed,
+            )
+            .all()
+        )
+
+        logger.info(f"Found {len(matches)} matching pairs")
+
         matched_pairs = []
-        matched_order_ids = set()
-        matched_payment_ids = set()
-        
-        # Matching algorithm - for each order, find matching payment
-        for order in orders:
-            for payment in payments:
-                # Skip if payment already matched (one-to-one matching)
-                if payment.id in matched_payment_ids:
-                    continue
-                
-                # Rule 1 & 2: Same merchant_order_id AND same merchant_id (FK)
-                if (payment.merchant_order_id != order.merchant_order_id or 
-                    payment.merchant_id != order.merchant_id):
-                    continue
-                
-                # Rule 3: Exact amount match
-                if payment.amount != order.amount:
-                    logger.warning(
-                        f"Amount mismatch for order {order.merchant_order_id}: "
-                        f"order={order.amount}, payment={payment.amount}"
-                    )
-                    continue
-                
-                # Rule 4: Date within ±3 days (if both have dates)
-                if order.order_date and payment.payment_date:
-                    date_diff = abs((payment.payment_date - order.order_date).days)
-                    if date_diff > 3:
-                        logger.warning(
-                            f"Date mismatch for order {order.merchant_order_id}: "
-                            f"difference={date_diff} days (exceeds 3-day threshold)"
-                        )
-                        continue
-                
-                # MATCH FOUND! Update both to reconciled status
-                order.status = OrderStatus.reconciled
-                payment.status = PaymentStatus.reconciled
-                
-                logger.info(
-                    f"Match found: order_id={order.id}, payment_id={payment.id}, "
-                    f"merchant_order_id={order.merchant_order_id}, amount={order.amount}"
-                )
-                
-                # Record the match
-                matched_pairs.append(MatchedPair(
-                    order_id=order.id,
-                    payment_id=payment.id,
-                    merchant_order_id=order.merchant_order_id,
-                    amount=float(order.amount)
-                ))
-                
-                matched_order_ids.add(order.id)
-                matched_payment_ids.add(payment.id)
-                break  # Move to next order (one-to-one matching)
-        
-        # Commit all status updates to database
+        for order, payment in matches:
+            order.status = OrderStatus.reconciled
+            payment.status = PaymentStatus.reconciled
+            logger.info(
+                f"Match found: order_id={order.id}, payment_id={payment.id}, "
+                f"merchant_order_id={order.merchant_order_id}, amount={order.amount}"
+            )
+            matched_pairs.append(MatchedPair(
+                order_id=order.id,
+                payment_id=payment.id,
+                merchant_order_id=order.merchant_order_id,
+                amount=float(order.amount)
+            ))
+
         db.commit()
-        
-        # Find unmatched transactions
-        unmatched_orders = [o.merchant_order_id for o in orders if o.id not in matched_order_ids]
-        unmatched_payments = [p.merchant_order_id for p in payments if p.id not in matched_payment_ids]
-        
+
+        # Remaining completed records were not matched
+        unmatched_orders = [
+            row.merchant_order_id
+            for row in db.query(Order.merchant_order_id).filter(Order.status == OrderStatus.completed).all()
+        ]
+        unmatched_payments = [
+            row.merchant_order_id
+            for row in db.query(Payment.merchant_order_id).filter(Payment.status == PaymentStatus.completed).all()
+        ]
+
         logger.info(
             f"Reconciliation complete: {len(matched_pairs)} matches found, "
             f"{len(unmatched_orders)} unmatched orders, {len(unmatched_payments)} unmatched payments"

@@ -4,7 +4,7 @@ SQLAlchemy models for the reconciliation system.
 Contains Merchant, Order, and Payment models with relationships.
 """
 
-from sqlalchemy import Column, Integer, String, Numeric, DateTime, Enum, Date, ForeignKey
+from sqlalchemy import Column, Integer, String, Numeric, DateTime, Enum, Date, ForeignKey, Index
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
@@ -95,19 +95,23 @@ class Order(Base):
     
     # Status tracking
     status = Column(
-        Enum(OrderStatus), 
+        Enum(OrderStatus),
         default=OrderStatus.pending,  # New orders start as pending
         nullable=False
     )
-    
+
     # Audit timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-    
+
     # Relationship back to merchant
     # This enables: order.merchant to get merchant info
     # Matches merchant.orders relationship we defined earlier
     merchant = relationship("Merchant", back_populates="orders")
+
+    __table_args__ = (
+        Index('ix_orders_status_merchant_id_order_id', 'status', 'merchant_id', 'merchant_order_id'),
+    )
 
     def __repr__(self):
         """String representation for debugging"""
@@ -165,19 +169,23 @@ class Payment(Base):
     
     # Status tracking
     status = Column(
-        Enum(PaymentStatus), 
+        Enum(PaymentStatus),
         default=PaymentStatus.pending,  # New payments start as pending
         nullable=False
     )
-    
+
     # Audit timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-    
+
     # Relationship back to merchant
     # This enables: payment.merchant to get merchant info
     # Matches merchant.payments relationship
     merchant = relationship("Merchant", back_populates="payments")
+
+    __table_args__ = (
+        Index('ix_payments_status_merchant_id_order_id', 'status', 'merchant_id', 'merchant_order_id'),
+    )
 
     def __repr__(self):
         """String representation for debugging"""
